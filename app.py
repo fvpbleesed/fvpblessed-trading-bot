@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="FVPBlessed Global Smart Money", layout="wide")
 st.title("🌐 FVPBlessed — Global Smart Money Monitor")
-st.caption("PHASE 3 • PAPER TRADING ONLY • Kraken public market data • No real orders")
-st.warning("Educational simulator only. No profit is guaranteed. Geopolitical, whale-flow and liquidation inputs below are MANUAL unless explicitly labeled live.")
+st.caption("PHASE 4 • 10× LEVERAGED FUTURES PAPER SIMULATOR • Kraken public market data • No real orders")
+st.warning("Educational simulator only — NO real Futures orders. 10× leverage magnifies gains and losses; liquidation is approximated. Geopolitical, whale-flow and liquidation inputs below are MANUAL.")
 
 PHT = ZoneInfo("Asia/Manila")
 now_pht = datetime.now(PHT)
@@ -20,7 +20,9 @@ else: session = "Quiet transition"
 with st.sidebar:
     st.header("Paper Bot Controls")
     starting_cash = st.number_input("Starting virtual cash (USDT)", min_value=100.0, value=1000.0, step=100.0)
-    trade_pct = st.slider("Position size (% cash)", 5, 50, 20)
+    trade_pct = st.slider("Margin allocated (% available cash)", 5, 50, 20)
+    leverage = st.select_slider("Paper leverage", options=[2,3,5,10,15,20], value=10)
+    maintenance_margin_pct = 0.5
     stop_loss_pct = st.slider("Stop loss (%)", 0.5, 10.0, 2.0, 0.5)
     take_profit_pct = st.slider("Take profit (%)", 1.0, 20.0, 4.0, 0.5)
     fee_pct = st.number_input("Simulated fee per side (%)", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
@@ -85,33 +87,39 @@ if base_signal=="BUY" and book_ratio<.42: signal="WAIT — ASK-HEAVY BOOK"
 
 # Session state portfolio
 if "cash" not in st.session_state:
-    st.session_state.cash=float(starting_cash); st.session_state.qty=0.0; st.session_state.entry=0.0
+    st.session_state.cash=float(starting_cash); st.session_state.qty=0.0; st.session_state.entry=0.0; st.session_state.margin=0.0; st.session_state.notional=0.0
     st.session_state.open_time=""; st.session_state.trades=[]; st.session_state.last_candle=None
 if st.sidebar.button("Reset paper account"):
-    for k in ["cash","qty","entry","open_time","trades","last_candle"]: st.session_state.pop(k,None)
+    for k in ["cash","qty","entry","margin","notional","open_time","trades","last_candle"]: st.session_state.pop(k,None)
     st.rerun()
-cash=float(st.session_state.cash); qty=float(st.session_state.qty); entry=float(st.session_state.entry); trades=st.session_state.trades
+cash=float(st.session_state.cash); qty=float(st.session_state.qty); entry=float(st.session_state.entry); margin=float(st.session_state.get("margin",0.0)); notional=float(st.session_state.get("notional",0.0)); trades=st.session_state.trades
 candle_id=str(latest.time)
 # execute only once per completed/new candle
 if st.session_state.last_candle!=candle_id:
     fee=fee_pct/100
     if qty>0:
         reason=None; exit_price=price
-        if float(latest.low)<=entry*(1-stop_loss_pct/100): exit_price=entry*(1-stop_loss_pct/100); reason="Stop Loss"
+        liq_price=entry*(1-(1/leverage)+(maintenance_margin_pct/100))
+        if float(latest.low)<=liq_price: exit_price=liq_price; reason="Estimated liquidation"
+        elif float(latest.low)<=entry*(1-stop_loss_pct/100): exit_price=entry*(1-stop_loss_pct/100); reason="Stop Loss"
         elif float(latest.high)>=entry*(1+take_profit_pct/100): exit_price=entry*(1+take_profit_pct/100); reason="Take Profit"
         elif bool(latest.sell_signal): reason="SMC SELL signal"
         if reason:
-            proceeds=qty*exit_price; exit_fee=proceeds*fee
-            pnl=(exit_price-entry)*qty-entry*qty*fee-exit_fee
-            cash+=proceeds-exit_fee
-            trades.append({"Opened UTC":st.session_state.open_time,"Closed UTC":candle_id,"Entry":entry,"Exit":exit_price,"Qty BTC":qty,"Net P&L USDT":pnl,"Exit reason":reason})
-            qty=0.; entry=0.; st.session_state.open_time=""
+            exit_notional=qty*exit_price; exit_fee=exit_notional*fee
+            gross_pnl=(exit_price-entry)*qty
+            pnl=gross_pnl-entry*qty*fee-exit_fee
+            cash+=margin+gross_pnl-exit_fee
+            trades.append({"Opened UTC":st.session_state.open_time,"Closed UTC":candle_id,"Entry":entry,"Exit":exit_price,"Qty BTC":qty,"Leverage":leverage,"Margin USDT":margin,"Gross P&L USDT":gross_pnl,"Net P&L USDT":pnl,"Exit reason":reason})
+            qty=0.; entry=0.; margin=0.; notional=0.; st.session_state.open_time=""
     if qty==0 and bool(latest.buy_signal) and signal=="BUY":
-        spend=cash*trade_pct/100; buy_fee=spend*fee; bought=spend-buy_fee
-        if bought>0: qty=bought/price; entry=price; cash-=spend; st.session_state.open_time=candle_id
-    st.session_state.cash=cash; st.session_state.qty=qty; st.session_state.entry=entry; st.session_state.trades=trades; st.session_state.last_candle=candle_id
-cash=float(st.session_state.cash); qty=float(st.session_state.qty); entry=float(st.session_state.entry); trades=st.session_state.trades
-pos=qty*price; equity=cash+pos; unreal=(price-entry)*qty if qty else 0
+        margin=cash*trade_pct/100
+        notional=margin*leverage
+        buy_fee=notional*fee
+        if margin+buy_fee<=cash and notional>0:
+            qty=notional/price; entry=price; cash-=margin+buy_fee; st.session_state.open_time=candle_id
+    st.session_state.cash=cash; st.session_state.qty=qty; st.session_state.entry=entry; st.session_state.margin=margin; st.session_state.notional=notional; st.session_state.trades=trades; st.session_state.last_candle=candle_id
+cash=float(st.session_state.cash); qty=float(st.session_state.qty); entry=float(st.session_state.entry); margin=float(st.session_state.get("margin",0.0)); notional=float(st.session_state.get("notional",0.0)); trades=st.session_state.trades
+pos=qty*price; unreal=(price-entry)*qty if qty else 0; equity=cash+margin+unreal
 closed=pd.DataFrame(trades); wins=int((closed["Net P&L USDT"]>0).sum()) if len(closed) else 0; losses=int((closed["Net P&L USDT"]<=0).sum()) if len(closed) else 0
 wr=wins/len(closed)*100 if len(closed) else 0; realized=float(closed["Net P&L USDT"].sum()) if len(closed) else 0
 
@@ -119,13 +127,14 @@ st.subheader("Philippine market clock")
 a,b,c=st.columns(3); a.metric("Philippine time",now_pht.strftime("%I:%M %p")); b.metric("Session estimate",session); c.metric("Day",now_pht.strftime("%A, %d %b"))
 st.caption("Session windows are approximate; crypto is open 24/7. Session activity does not guarantee an edge.")
 st.subheader("Portfolio & signal")
+st.caption(f"Paper Futures: {leverage}× leverage • margin allocation {trade_pct}% of available cash • approximate isolated margin")
 m=st.columns(5); m[0].metric("BTC/USDT Kraken",f"${price:,.2f}"); m[1].metric("FVP Signal",signal); m[2].metric("Equity",f"{equity:,.2f} USDT",f"{equity-starting_cash:+,.2f}"); m[3].metric("Realized P&L",f"{realized:+,.2f} USDT"); m[4].metric("Win rate",f"{wr:.1f}%",f"{wins}W / {losses}L")
 st.caption(f"Latest candle {latest.time.strftime('%Y-%m-%d %H:%M UTC')} • SMC score {int(latest.score)}/3 (not probability)")
 if qty:
-    tp=entry*(1+take_profit_pct/100); sl=entry*(1-stop_loss_pct/100)
+    tp=entry*(1+take_profit_pct/100); sl=entry*(1-stop_loss_pct/100); liq=entry*(1-(1/leverage)+(maintenance_margin_pct/100))
     st.success("OPEN VIRTUAL LONG")
-    q=st.columns(5); q[0].metric("Entry",f"${entry:,.2f}"); q[1].metric("Take Profit",f"${tp:,.2f}"); q[2].metric("Stop Loss",f"${sl:,.2f}"); q[3].metric("Unrealized P&L",f"{unreal:+,.2f} USDT"); q[4].metric("Position value",f"{pos:,.2f} USDT")
-else: st.info("No open virtual position. Entry / TP / SL appear after a simulated BUY.")
+    q=st.columns(6); q[0].metric("Entry",f"${entry:,.2f}"); q[1].metric("Take Profit",f"${tp:,.2f}"); q[2].metric("Stop Loss",f"${sl:,.2f}"); q[3].metric("Unrealized P&L",f"{unreal:+,.2f} USDT"); q[4].metric("Position notional",f"{pos:,.2f} USDT"); q[5].metric("Approx. liquidation",f"${liq:,.2f}"); st.caption(f"Isolated margin reserved: {margin:,.2f} USDT • Liquidation estimate uses a simplified {maintenance_margin_pct:.1f}% maintenance margin; actual exchange rules differ.")
+else: st.info("No open virtual position. Entry / TP / SL / liquidation estimate appear after a simulated BUY.")
 st.subheader("Live Kraken order-book snapshot")
 x,y,z=st.columns(3); x.metric("Bid BTC depth (top 100)",f"{bid_btc:.2f} BTC"); y.metric("Ask BTC depth (top 100)",f"{ask_btc:.2f} BTC"); z.metric("Bid share",f"{book_ratio*100:.1f}%",book_label)
 st.caption("Order book is live public Kraken depth. It is not whale tracking and can be spoofed/cancelled.")
@@ -146,4 +155,4 @@ else:
     st.download_button("Download CSV",closed.to_csv(index=False).encode(),"FVPBlessed_trades.csv","text/csv")
 st.subheader("Recent candles / SMC signals")
 st.dataframe(df[["time","open","high","low","close","volume","bull_sweep","bear_sweep","volume_spike","buy_signal","sell_signal","score"]].tail(15),use_container_width=True,hide_index=True)
-st.caption("FVPBlessed Phase 3 • Paper trading only • Session-based portfolio; resetting or browser session changes may clear state.")
+st.caption("FVPBlessed Phase 4 • 10× Futures paper simulator only • Session-based portfolio; resetting or browser session changes may clear state. No real exchange orders.")
