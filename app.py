@@ -151,9 +151,17 @@ m5.metric("Win rate", f"{win_rate:.1f}%", f"{wins} wins / {losses} losses")
 st.caption(f"Latest candle: {latest.time.strftime('%Y-%m-%d %H:%M UTC')} • Candle interval: 5 minutes • Signal score: {int(latest.signal_score)}/3 (not a probability)")
 
 if qty:
-    st.success(f"Open virtual LONG: {qty:.6f} BTC • Entry ${entry:,.2f} • Position value ${position_value:,.2f} • Unrealized P&L {unrealized:+,.2f} USDT")
+    tp_price = entry * (1 + take_profit_pct/100)
+    sl_price = entry * (1 - stop_loss_pct/100)
+    st.success(f"Open virtual LONG: {qty:.6f} BTC • Position value ${position_value:,.2f} • Unrealized P&L {unrealized:+,.2f} USDT")
+    st.subheader("🎯 Active trade levels")
+    a, b, c = st.columns(3)
+    a.metric("Entry price", f"${entry:,.2f}")
+    b.metric("Take profit (TP)", f"${tp_price:,.2f}", f"+{take_profit_pct:.2f}%")
+    c.metric("Stop loss (SL)", f"${sl_price:,.2f}", f"-{stop_loss_pct:.2f}%")
+    st.caption("TP/SL are simulated exit triggers. The app checks candle high/low; if both are touched in one candle, stop loss is conservatively prioritized.")
 else:
-    st.info("No open virtual position.")
+    st.info("No open virtual position. Entry, TP, and SL will appear here after a simulated BUY.")
 
 chart = df.set_index("time")[["close","sma9","sma21"]].rename(columns={"close":"BTC price","sma9":"SMA 9","sma21":"SMA 21"})
 st.line_chart(chart)
